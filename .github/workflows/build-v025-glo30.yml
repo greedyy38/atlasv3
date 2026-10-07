@@ -1,0 +1,167 @@
+name: Build ATLAS v0.25 GLO30 APK
+
+on:
+  push:
+    branches: [ build-v025-glo30 ]
+  workflow_dispatch:
+
+jobs:
+  build-v025:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recover ATLAS v0.23 web sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat fullsrc/part000.b64 fullsrc/part001.b64 fullsrc/part002.b64 fullsrc/part003.b64 fullsrc/part004-005.b64 fullsrc/part006-007.b64 | tr -cd 'A-Za-z0-9+/=' > good80.b64
+          tr -cd 'A-Za-z0-9+/=' < fullsrc/part008-009.b64 > bad20.b64
+          python3 - <<'PY'
+          import base64,hashlib,os,struct,zlib,binascii
+          prefix=open('good80.b64').read(); bad=open('bad20.b64').read()
+          assert len(prefix)==80000 and len(bad)==20001
+          want={'app.js':'4cea10143179c73e0423c695e5aeda3b5cd922c83dc61c483e56ab8ec0b9513f','index.html':'57e30c13f2aa7cd94071521691c1b01a157ae18c10257f72c95fa168c359fd9c','app.css':'1eed6a08ff73a99182d8050ce12044e7413fefd98d97035ee09a05d1e16741aa'}
+          def extract(data,write=False):
+              pos=0; found={}
+              while True:
+                  p=data.find(b'PK\x03\x04',pos)
+                  if p<0 or p+30>len(data): break
+                  try: _,ver,flag,method,mt,md,crc,csize,usize,nlen,xlen=struct.unpack_from('<4s5H3I2H',data,p)
+                  except: break
+                  ns=p+30; ne=ns+nlen; ds=ne+xlen; de=ds+csize
+                  if de>len(data) or nlen>1000 or xlen>10000: break
+                  try: name=data[ns:ne].decode('utf-8')
+                  except: break
+                  raw=data[ds:de]
+                  try: out=raw if method==0 else zlib.decompress(raw,-15) if method==8 else None
+                  except: return None
+                  if out is None or (binascii.crc32(out)&0xffffffff)!=crc: return None
+                  base=name.rsplit('/',1)[-1]
+                  if base in want: found[base]=hashlib.sha256(out).hexdigest()
+                  if write and name.startswith('ATLAS-v0.23-FULL-ANDROID/'):
+                      rel=name[len('ATLAS-v0.23-FULL-ANDROID/'):]
+                      if rel and not rel.endswith('/'):
+                          path=os.path.join('ATLAS-v0.23-FULL',rel)
+                          os.makedirs(os.path.dirname(path),exist_ok=True)
+                          open(path,'wb').write(out)
+                  pos=de
+              return found
+          repaired=None
+          for i in range(len(bad)):
+              s=prefix+bad[:i]+bad[i+1:]
+              try: data=base64.b64decode(s,validate=True)
+              except: continue
+              r=extract(data)
+              if r and all(r.get(k)==v for k,v in want.items()): repaired=data; break
+          if repaired is None: raise SystemExit('Could not repair web source segment')
+          extract(repaired,True)
+          PY
+          test -f ATLAS-v0.23-FULL/app/src/main/assets/index.html
+
+      - name: Restore Android host
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat fullhost/part0.b64 fullhost/part1.b64 fullhost/part2.b64 | tr -cd 'A-Za-z0-9+/=' > fullhost.bad.b64
+          python3 - <<'PY'
+          import base64,hashlib
+          bad=open('fullhost.bad.b64').read().strip()
+          target='2a1d6054c8487112ee202081bb9b5c0940ac403297f2304f4a710bf4bce1701f'
+          alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          if len(bad)==28844:
+              data=base64.b64decode(bad,validate=True)
+              if hashlib.sha256(data).hexdigest()==target:
+                  open('fullhost.zip','wb').write(data); raise SystemExit(0)
+          if len(bad)!=28843: raise SystemExit('Unexpected fullhost base64 length')
+          for i in range(10000):
+              for ch in alphabet:
+                  s=bad[:i]+ch+bad[i:]
+                  try: data=base64.b64decode(s,validate=True)
+                  except Exception: continue
+                  if hashlib.sha256(data).hexdigest()==target:
+                      open('fullhost.zip','wb').write(data); raise SystemExit(0)
+          raise SystemExit('Could not repair fullhost base64')
+          PY
+          unzip -qo fullhost.zip -d ATLAS-v0.23-FULL
+          test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+
+      - name: Apply v0.25 GLO30 + Define Rota + Worker delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat v025/part00.b64 v025/part01.b64 v025/part02.b64 v025/part03.b64 v025/part04.b64 v025/part05.b64 v025/part06.b64 v025/part07.b64 | tr -cd 'A-Za-z0-9+/=' | base64 -d > /tmp/v025_delta.tar.xz
+          tar -xJf /tmp/v025_delta.tar.xz -C ATLAS-v0.23-FULL
+          sed -i -E 's/(version-badge[^>]*>)[^<]+/\1v0.25/' ATLAS-v0.23-FULL/app/src/main/assets/index.html || true
+          grep -q 'versionCode 25' ATLAS-v0.23-FULL/app/build.gradle
+          grep -q "versionName '0.25-glo30-fix'" ATLAS-v0.23-FULL/app/build.gradle
+          grep -q 'isUsableCopernicusTile' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          grep -q 'GLO-30 tekrar deneniyor' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          if grep -q "importScripts('survey_engine.js')" ATLAS-v0.23-FULL/app/src/main/assets/js/grid_worker.js; then echo 'Old Worker import remains'; exit 1; fi
+          grep -q 'AtlasEngine' ATLAS-v0.23-FULL/app/src/main/assets/js/grid_worker.js
+
+      - name: Complete Gradle project and vendor assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ATLAS-v0.23-FULL/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '9.4.0' apply false }
+          EOF
+          cat > ATLAS-v0.23-FULL/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'AtlasMobile'
+          include ':app'
+          EOF
+          cat > ATLAS-v0.23-FULL/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+          grep -q "applicationId 'com.greedyy38.atlasv3'" ATLAS-v0.23-FULL/app/build.gradle
+          V=ATLAS-v0.23-FULL/app/src/main/assets/vendor; mkdir -p "$V/images"
+          curl -fsSL https://unpkg.com/leaflet@1.9.4/dist/leaflet.js -o "$V/leaflet.js"
+          curl -fsSL https://unpkg.com/leaflet@1.9.4/dist/leaflet.css -o "$V/leaflet.css"
+          curl -fsSL https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js -o "$V/leaflet.draw.js"
+          curl -fsSL https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css -o "$V/leaflet.draw.css"
+          for f in marker-icon.png marker-icon-2x.png marker-shadow.png layers.png layers-2x.png; do curl -fsSL "https://unpkg.com/leaflet@1.9.4/dist/images/$f" -o "$V/images/$f"; done
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Build APK
+        working-directory: ATLAS-v0.23-FULL
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify APK package, version and signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          A=ATLAS-v0.23-FULL/app/build/outputs/apk/debug/app-debug.apk
+          unzip -t "$A" >/dev/null
+          test $(stat -c%s "$A") -gt 500000
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$A"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$A" | tee badging.txt
+          grep -q "package: name='com.greedyy38.atlasv3' versionCode='25'" badging.txt
+          unzip -p "$A" assets/js/grid_worker.js | grep -q 'AtlasEngine'
+          if unzip -p "$A" assets/js/grid_worker.js | grep -q "importScripts('survey_engine.js')"; then exit 1; fi
+          cp "$A" ATLAS-v0.25-COPERNICUS-GLO30-WORKER-FIX.apk
+          sha256sum ATLAS-v0.25-COPERNICUS-GLO30-WORKER-FIX.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS-v0.25-COPERNICUS-GLO30-WORKER-FIX
+          path: ATLAS-v0.25-COPERNICUS-GLO30-WORKER-FIX.apk
+          if-no-files-found: error
