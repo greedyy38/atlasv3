@@ -25,7 +25,8 @@ jobs:
             fullsrc/part006-007.b64 \
             fullsrc/part008-009.b64 \
             fullsrc/part010-011.b64 \
-            fullsrc/part012-013.b64 | tr -d '\r\n' > partial.b64
+            fullsrc/part012-013.b64 | tr -cd 'A-Za-z0-9+/=' > partial.b64
+          echo "partial base64 chars: $(wc -c < partial.b64)"
           base64 -d partial.b64 > partial.zip
           python3 - <<'PY'
           import os,struct,zlib
@@ -111,7 +112,6 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.VIBRATE"/><application android:theme="@style/Theme.Atlas" android:label="ATLAS v0.23 FULL" android:usesCleartextTraffic="true" android:hardwareAccelerated="true"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
           XML
-          sed -i "s/namespace 'com.atlas.survey'/namespace 'com.atlas.survey'/" ATLAS-v0.23-FULL/app/build.gradle
           grep -q "applicationId 'com.greedyy38.atlasv3'" ATLAS-v0.23-FULL/app/build.gradle
 
       - name: Set up Java 17
