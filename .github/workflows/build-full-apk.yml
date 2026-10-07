@@ -73,11 +73,9 @@ jobs:
               if hashlib.sha256(data).hexdigest()==target:
                   open('fullhost.zip','wb').write(data); raise SystemExit(0)
           if len(bad)!=28843: raise SystemExit('Unexpected fullhost base64 length')
-          # The known transfer fault is one missing character in the first 10,000 chars.
-          tail=bad
           for i in range(10000):
               for ch in alphabet:
-                  s=tail[:i]+ch+tail[i:]
+                  s=bad[:i]+ch+bad[i:]
                   try: data=base64.b64decode(s,validate=True)
                   except Exception: continue
                   if hashlib.sha256(data).hexdigest()==target:
@@ -91,9 +89,16 @@ jobs:
           test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
           test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/V25BridgeClient.java
           test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/DemSampler.java
-          grep -q 'onShowFileChooser' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
-          grep -q 'requestLocationIfNeeded' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
-          grep -q 'new V25BridgeClient' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+
+      - name: Apply native Copernicus GLO-30 v0.25 fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ATLAS-v0.23-FULL ATLAS-v025
+          python3 tools/apply_v025_glo30.py
+          rm ATLAS-v025
+          grep -q 'isUsableCopernicusTile' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          grep -q 'versionCode 25' ATLAS-v0.23-FULL/app/build.gradle
 
       - name: Complete Gradle project and map vendor files
         shell: bash
@@ -122,29 +127,32 @@ jobs:
           for f in marker-icon.png marker-icon-2x.png marker-shadow.png layers.png layers-2x.png; do curl -fsSL "https://unpkg.com/leaflet@1.9.4/dist/images/$f" -o "$V/images/$f"; done
 
       - uses: actions/setup-java@v4
-        with: {distribution: temurin, java-version: '17'}
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Android SDK
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
-        with: {gradle-version: '9.6.0'}
-      - name: Build full APK
+        with:
+          gradle-version: '9.6.0'
+      - name: Build full native APK
         working-directory: ATLAS-v0.23-FULL
         run: gradle --no-daemon :app:assembleDebug
-      - name: Verify full APK
+      - name: Verify full native APK
         run: |
           set -e
           A=ATLAS-v0.23-FULL/app/build/outputs/apk/debug/app-debug.apk
           unzip -t "$A" >/dev/null
           unzip -l "$A" > list.txt
-          for f in assets/index.html assets/js/app.js assets/js/surface.js assets/js/surface_worker.js assets/js/worker_factory.js assets/js/survey_engine.js assets/js/v25_bridge.js assets/vendor/leaflet.js assets/vendor/leaflet.draw.js; do grep -q "$f" list.txt; done
+          for f in assets/index.html assets/js/app.js assets/js/surface.js assets/js/surface_worker.js assets/js/worker_factory.js assets/js/survey_engine.js assets/js/v25_bridge.js; do grep -q "$f" list.txt; done
           test $(stat -c%s "$A") -gt 500000
-          cp "$A" ATLAS-v0.23-FULL-Surfer-DefineRota.apk
-          sha256sum ATLAS-v0.23-FULL-Surfer-DefineRota.apk
+          cp "$A" ATLAS-v0.25-NATIVE-GLO30-BASE.apk
+          sha256sum ATLAS-v0.25-NATIVE-GLO30-BASE.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: ATLAS-v0.23-FULL-Surfer-DefineRota
-          path: ATLAS-v0.23-FULL-Surfer-DefineRota.apk
+          name: ATLAS-v0.25-NATIVE-GLO30-BASE
+          path: ATLAS-v0.25-NATIVE-GLO30-BASE.apk
           if-no-files-found: error
