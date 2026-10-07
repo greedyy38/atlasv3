@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Recover full ATLAS web sources
+      - name: Recover ATLAS web sources
         shell: bash
         run: |
           set -euo pipefail
@@ -20,12 +20,10 @@ jobs:
           python3 - <<'PY'
           import base64,hashlib,os,struct,zlib,binascii
           prefix=open('good80.b64').read(); bad=open('bad20.b64').read()
-          print('prefix',len(prefix),'bad',len(bad))
-          assert len(prefix)==80000, len(prefix)
-          assert len(bad)==20001, len(bad)
+          assert len(prefix)==80000 and len(bad)==20001
           want={'app.js':'4cea10143179c73e0423c695e5aeda3b5cd922c83dc61c483e56ab8ec0b9513f','index.html':'57e30c13f2aa7cd94071521691c1b01a157ae18c10257f72c95fa168c359fd9c','app.css':'1eed6a08ff73a99182d8050ce12044e7413fefd98d97035ee09a05d1e16741aa'}
           def extract(data,write=False):
-              pos=0; found={}; n=0
+              pos=0; found={}; count=0
               while True:
                   p=data.find(b'PK\x03\x04',pos)
                   if p<0 or p+30>len(data): break
@@ -36,44 +34,74 @@ jobs:
                   try: name=data[ns:ne].decode('utf-8')
                   except: break
                   raw=data[ds:de]
-                  try:
-                      out=raw if method==0 else zlib.decompress(raw,-15) if method==8 else None
+                  try: out=raw if method==0 else zlib.decompress(raw,-15) if method==8 else None
                   except: return None
-                  if out is None: return None
-                  if (binascii.crc32(out)&0xffffffff)!=crc: return None
+                  if out is None or (binascii.crc32(out)&0xffffffff)!=crc: return None
                   base=name.rsplit('/',1)[-1]
                   if base in want: found[base]=hashlib.sha256(out).hexdigest()
                   if write and name.startswith('ATLAS-v0.23-FULL-ANDROID/'):
                       rel=name[len('ATLAS-v0.23-FULL-ANDROID/'):]
                       if rel and not rel.endswith('/'):
                           path=os.path.join('ATLAS-v0.23-FULL',rel); os.makedirs(os.path.dirname(path),exist_ok=True); open(path,'wb').write(out)
-                  n+=1; pos=de
-              return found,n
+                  count+=1; pos=de
+              return found,count
           repaired=None
           for i in range(len(bad)):
               s=prefix+bad[:i]+bad[i+1:]
               try: data=base64.b64decode(s,validate=True)
               except: continue
               r=extract(data)
-              if r and all(r[0].get(k)==v for k,v in want.items()):
-                  repaired=data; print('repaired deletion index',i,'files',r[1]); break
-          if repaired is None: raise SystemExit('Could not repair part008-009')
-          r=extract(repaired,True); print('Recovered files',r[1],r[0])
+              if r and all(r[0].get(k)==v for k,v in want.items()): repaired=data; break
+          if repaired is None: raise SystemExit('Could not repair web source segment')
+          found,count=extract(repaired,True); print('Recovered web entries:',count,found)
           PY
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/surface_worker.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/surface.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/worker_factory.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/grid_worker.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/exporters.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/v25_bridge.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/survey_engine.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/js/app.js
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/css/app.css
-          test -f ATLAS-v0.23-FULL/app/src/main/assets/index.html
+          for f in \
+            app/src/main/assets/index.html \
+            app/src/main/assets/js/app.js \
+            app/src/main/assets/js/surface.js \
+            app/src/main/assets/js/surface_worker.js \
+            app/src/main/assets/js/worker_factory.js \
+            app/src/main/assets/js/grid_worker.js \
+            app/src/main/assets/js/exporters.js \
+            app/src/main/assets/js/v25_bridge.js \
+            app/src/main/assets/js/survey_engine.js \
+            app/src/main/assets/css/app.css; do test -f "ATLAS-v0.23-FULL/$f"; done
 
-      - name: Complete map vendor files
+      - name: Restore original full Android host
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          cat fullhost/part0.b64 fullhost/part1.b64 fullhost/part2.b64 | tr -cd 'A-Za-z0-9+/=' | base64 -d > fullhost.zip
+          echo '2a1d6054c8487112ee202081bb9b5c0940ac403297f2304f4a710bf4bce1701f  fullhost.zip' | sha256sum -c -
+          unzip -qo fullhost.zip -d ATLAS-v0.23-FULL
+          test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/V25BridgeClient.java
+          test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/DemSampler.java
+          grep -q 'onShowFileChooser' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          grep -q 'requestLocationIfNeeded' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+          grep -q 'new V25BridgeClient' ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
+
+      - name: Complete Gradle project and map vendor files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ATLAS-v0.23-FULL/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '9.4.0' apply false
+          }
+          EOF
+          cat > ATLAS-v0.23-FULL/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'AtlasMobile'
+          include ':app'
+          EOF
+          cat > ATLAS-v0.23-FULL/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+          grep -q "applicationId 'com.greedyy38.atlasv3'" ATLAS-v0.23-FULL/app/build.gradle
           V=ATLAS-v0.23-FULL/app/src/main/assets/vendor; mkdir -p "$V/images"
           curl -fsSL https://unpkg.com/leaflet@1.9.4/dist/leaflet.js -o "$V/leaflet.js"
           curl -fsSL https://unpkg.com/leaflet@1.9.4/dist/leaflet.css -o "$V/leaflet.css"
@@ -81,35 +109,30 @@ jobs:
           curl -fsSL https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css -o "$V/leaflet.draw.css"
           for f in marker-icon.png marker-icon-2x.png marker-shadow.png layers.png layers-2x.png; do curl -fsSL "https://unpkg.com/leaflet@1.9.4/dist/images/$f" -o "$V/images/$f"; done
 
-      - name: Create Android host
-        run: |
-          J=ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey; mkdir -p "$J"
-          cat > "$J/MainActivity.java" <<'JAVA'
-          package com.atlas.survey;
-          import android.app.Activity;import android.content.*;import android.net.Uri;import android.os.*;import android.provider.MediaStore;import android.webkit.*;import android.widget.Toast;import org.json.JSONObject;import java.io.*;import java.nio.charset.StandardCharsets;
-          public class MainActivity extends Activity{static final int R=1001;WebView w;ValueCallback<Uri[]> cb;public void onCreate(Bundle b){super.onCreate(b);w=new WebView(this);setContentView(w);WebSettings s=w.getSettings();s.setJavaScriptEnabled(true);s.setDomStorageEnabled(true);s.setAllowFileAccess(true);s.setAllowContentAccess(true);s.setDatabaseEnabled(true);w.addJavascriptInterface(new B(),"Android");w.setWebViewClient(new WebViewClient());w.setWebChromeClient(new WebChromeClient(){public boolean onShowFileChooser(WebView v,ValueCallback<Uri[]> c,FileChooserParams p){if(cb!=null)cb.onReceiveValue(null);cb=c;Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,R);return true;}});w.loadUrl("file:///android_asset/index.html");}protected void onActivityResult(int r,int c,Intent d){super.onActivityResult(r,c,d);if(r==R&&cb!=null){Uri[] o=c==RESULT_OK&&d!=null&&d.getData()!=null?new Uri[]{d.getData()}:null;cb.onReceiveValue(o);cb=null;}}void js(String x){runOnUiThread(()->w.evaluateJavascript(x,null));}String q(String x){return JSONObject.quote(x==null?"":x);}void save(String n,String m,byte[] d){try{ContentValues v=new ContentValues();v.put(MediaStore.Downloads.DISPLAY_NAME,n);v.put(MediaStore.Downloads.MIME_TYPE,m);if(Build.VERSION.SDK_INT>=29)v.put(MediaStore.Downloads.RELATIVE_PATH,"Download/ATLAS");Uri u=getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,v);try(OutputStream o=getContentResolver().openOutputStream(u)){o.write(d);}runOnUiThread(()->Toast.makeText(this,"Kaydedildi: "+n,Toast.LENGTH_SHORT).show());}catch(Exception e){}}
-          public class B{@JavascriptInterface public String getDeviceInfo(){try{JSONObject j=new JSONObject();j.put("model",Build.MODEL);j.put("manufacturer",Build.MANUFACTURER);j.put("sdk",Build.VERSION.SDK_INT);j.put("ram_mb",Runtime.getRuntime().maxMemory()/1048576);return j.toString();}catch(Exception e){return"{}";}}@JavascriptInterface public void saveText(String n,String m,String c){new Thread(()->save(n,m,c.getBytes(StandardCharsets.UTF_8))).start();}@JavascriptInterface public void saveBase64(String n,String m,String b){new Thread(()->save(n,m,android.util.Base64.decode(b,0))).start();}@JavascriptInterface public void reportJsError(String m){android.util.Log.e("ATLAS-JS",m);}@JavascriptInterface public void saveRecoveryState(String j){try(FileOutputStream f=openFileOutput("atlas_recovery.json",MODE_PRIVATE)){f.write(j.getBytes(StandardCharsets.UTF_8));}catch(Exception e){}}@JavascriptInterface public String loadRecoveryState(){try(FileInputStream f=openFileInput("atlas_recovery.json")){ByteArrayOutputStream o=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while((n=f.read(b))>0)o.write(b,0,n);return o.toString("UTF-8");}catch(Exception e){return"";}}@JavascriptInterface public void clearRecoveryState(){deleteFile("atlas_recovery.json");}@JavascriptInterface public void vibrate(int m){}@JavascriptInterface public void requestLocation(){js("window.onNativeLocationError&&window.onNativeLocationError('Konum köprüsü kapalı')");}@JavascriptInterface public boolean openAndroidSettings(String p){startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));return true;}@JavascriptInterface public void pickDemFile(){js("window.onDemLoaded&&window.onDemLoaded(false,'','DEM köprüsü kapalı')");}@JavascriptInterface public void prepareCopernicusDem(String p){pickDemFile();}@JavascriptInterface public boolean hasDem(){return false;}@JavascriptInterface public void sampleDemChunk(String id,int off,String c){js("window.onDemChunk&&window.onDemChunk("+q(id)+","+off+",'[]','DEM yok')");}@JavascriptInterface public void testV25(String h,int p,String k){js("window.onV25Test&&window.onV25Test(false,'PC V25 bağlı değil')");}@JavascriptInterface public void runV25(String h,int p,String k,String f,String c,String o){js("window.onV25Error&&window.onV25Error('PC V25 bağlı değil')");}@JavascriptInterface public void saveLastV25Zip(){}@JavascriptInterface public void saveV25Image(String n){}}
-          public void onBackPressed(){if(w.canGoBack())w.goBack();else super.onBackPressed();}}
-          JAVA
-          cat > ATLAS-v0.23-FULL/app/src/main/AndroidManifest.xml <<'XML'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.INTERNET"/><application android:theme="@style/Theme.Atlas" android:label="ATLAS v0.23 FULL" android:usesCleartextTraffic="true"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
-          XML
-          grep -q "applicationId 'com.greedyy38.atlasv3'" ATLAS-v0.23-FULL/app/build.gradle
-
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - name: Android SDK
         run: |
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"; yes | sdkmanager --licenses >/dev/null || true; sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
         with: {gradle-version: '9.6.0'}
-      - name: Build
+      - name: Build full APK
         working-directory: ATLAS-v0.23-FULL
         run: gradle --no-daemon :app:assembleDebug
-      - name: Verify and name
+      - name: Verify full APK
         run: |
-          A=ATLAS-v0.23-FULL/app/build/outputs/apk/debug/app-debug.apk; unzip -l "$A" > list.txt
-          for f in assets/index.html assets/js/app.js assets/js/surface.js assets/js/surface_worker.js assets/js/worker_factory.js assets/js/survey_engine.js assets/js/v25_bridge.js assets/vendor/leaflet.js assets/vendor/leaflet.draw.js; do grep -q "$f" list.txt || exit 1; done
-          cp "$A" ATLAS-v0.23-FULL-Surfer-DefineRota.apk; ls -lh ATLAS-v0.23-FULL-Surfer-DefineRota.apk
+          set -e
+          A=ATLAS-v0.23-FULL/app/build/outputs/apk/debug/app-debug.apk
+          unzip -t "$A" >/dev/null
+          unzip -l "$A" > list.txt
+          for f in assets/index.html assets/js/app.js assets/js/surface.js assets/js/surface_worker.js assets/js/worker_factory.js assets/js/survey_engine.js assets/js/v25_bridge.js assets/vendor/leaflet.js assets/vendor/leaflet.draw.js; do grep -q "$f" list.txt; done
+          test $(stat -c%s "$A") -gt 500000
+          cp "$A" ATLAS-v0.23-FULL-Surfer-DefineRota.apk
+          sha256sum ATLAS-v0.23-FULL-Surfer-DefineRota.apk
       - uses: actions/upload-artifact@v4
-        with: {name: ATLAS-v0.23-FULL-Surfer-DefineRota, path: ATLAS-v0.23-FULL-Surfer-DefineRota.apk, if-no-files-found: error}
+        with:
+          name: ATLAS-v0.23-FULL-Surfer-DefineRota
+          path: ATLAS-v0.23-FULL-Surfer-DefineRota.apk
+          if-no-files-found: error
