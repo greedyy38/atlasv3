@@ -55,23 +55,37 @@ jobs:
           if repaired is None: raise SystemExit('Could not repair web source segment')
           found,count=extract(repaired,True); print('Recovered web entries:',count,found)
           PY
-          for f in \
-            app/src/main/assets/index.html \
-            app/src/main/assets/js/app.js \
-            app/src/main/assets/js/surface.js \
-            app/src/main/assets/js/surface_worker.js \
-            app/src/main/assets/js/worker_factory.js \
-            app/src/main/assets/js/grid_worker.js \
-            app/src/main/assets/js/exporters.js \
-            app/src/main/assets/js/v25_bridge.js \
-            app/src/main/assets/js/survey_engine.js \
-            app/src/main/assets/css/app.css; do test -f "ATLAS-v0.23-FULL/$f"; done
+          for f in app/src/main/assets/index.html app/src/main/assets/js/app.js app/src/main/assets/js/surface.js app/src/main/assets/js/surface_worker.js app/src/main/assets/js/worker_factory.js app/src/main/assets/js/grid_worker.js app/src/main/assets/js/exporters.js app/src/main/assets/js/v25_bridge.js app/src/main/assets/js/survey_engine.js app/src/main/assets/css/app.css; do test -f "ATLAS-v0.23-FULL/$f"; done
 
       - name: Restore original full Android host
         shell: bash
         run: |
           set -euo pipefail
-          cat fullhost/part0.b64 fullhost/part1.b64 fullhost/part2.b64 | tr -cd 'A-Za-z0-9+/=' | base64 -d > fullhost.zip
+          cat fullhost/part0.b64 fullhost/part1.b64 fullhost/part2.b64 | tr -cd 'A-Za-z0-9+/=' > fullhost.bad.b64
+          python3 - <<'PY'
+          import base64,hashlib
+          bad=open('fullhost.bad.b64').read().strip()
+          target='2a1d6054c8487112ee202081bb9b5c0940ac403297f2304f4a710bf4bce1701f'
+          alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          print('fullhost base64 chars:',len(bad))
+          if len(bad)==28844:
+              data=base64.b64decode(bad,validate=True)
+              if hashlib.sha256(data).hexdigest()==target:
+                  open('fullhost.zip','wb').write(data); raise SystemExit(0)
+          if len(bad)!=28843: raise SystemExit('Unexpected fullhost base64 length')
+          # The known transfer fault is one missing character in the first 10,000 chars.
+          tail=bad
+          for i in range(10000):
+              for ch in alphabet:
+                  s=tail[:i]+ch+tail[i:]
+                  try: data=base64.b64decode(s,validate=True)
+                  except Exception: continue
+                  if hashlib.sha256(data).hexdigest()==target:
+                      print('Repaired missing base64 char at',i,'value',ch)
+                      open('fullhost.zip','wb').write(data)
+                      raise SystemExit(0)
+          raise SystemExit('Could not repair fullhost base64')
+          PY
           echo '2a1d6054c8487112ee202081bb9b5c0940ac403297f2304f4a710bf4bce1701f  fullhost.zip' | sha256sum -c -
           unzip -qo fullhost.zip -d ATLAS-v0.23-FULL
           test -f ATLAS-v0.23-FULL/app/src/main/java/com/atlas/survey/MainActivity.java
@@ -86,9 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > ATLAS-v0.23-FULL/build.gradle <<'EOF'
-          plugins {
-              id 'com.android.application' version '9.4.0' apply false
-          }
+          plugins { id 'com.android.application' version '9.4.0' apply false }
           EOF
           cat > ATLAS-v0.23-FULL/settings.gradle <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
