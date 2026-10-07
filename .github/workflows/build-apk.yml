@@ -2,8 +2,6 @@ name: Build ATLAS APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
@@ -14,8 +12,10 @@ jobs:
 
       - name: Reconstruct source archive
         run: |
-          cat source/atlas_min.b64.part* > atlas_min.b64
+          cat source2/atlas_min.b64.part* > atlas_min.b64
+          test "$(wc -c < atlas_min.b64)" -eq 235568
           base64 -d atlas_min.b64 > atlas_min.zip
+          echo "5ccf73dd667cab03589589d3c99704f0d24b12775dc6692e65ea99cd244b1fa0  atlas_min.zip" | sha256sum -c -
           unzip -q atlas_min.zip
 
       - name: Set up Java 17
