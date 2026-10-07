@@ -12,8 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract Android source
-        run: unzip -q atlas_min.zip
+      - name: Reconstruct source archive
+        run: |
+          cat source/atlas_min.b64.part* > atlas_min.b64
+          base64 -d atlas_min.b64 > atlas_min.zip
+          unzip -q atlas_min.zip
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -38,7 +41,7 @@ jobs:
         working-directory: atlas_min
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ATLAS-v0.22-Define-Rota-Core-debug
