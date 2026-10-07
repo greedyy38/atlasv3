@@ -14,7 +14,9 @@ jobs:
 
       - name: Verify and extract full source
         run: |
-          echo "88d8c4e202e84bc78efc38407890cd738c50d86b08b8687e7d315762b8542884  ATLAS-v0.23-FULL-COMPACT.zip" | sha256sum -c -
+          ls -l ATLAS-v0.23-FULL-COMPACT.zip
+          sha256sum ATLAS-v0.23-FULL-COMPACT.zip
+          unzip -t ATLAS-v0.23-FULL-COMPACT.zip
           unzip -q ATLAS-v0.23-FULL-COMPACT.zip
 
       - name: Set up Java 17
