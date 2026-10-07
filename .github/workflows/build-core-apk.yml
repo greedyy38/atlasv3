@@ -14,7 +14,7 @@ jobs:
 
       - name: Verify and extract core source
         run: |
-          echo "740e3b0b022eb7293e2826170bc9c3e5c41c17e71b3df608a07fcb90fc358639  atlas_core_apk.zip" | sha256sum -c -
+          echo "b31c4ecc4674b39a09da2d477431ce85d76cd627d1e27382acd60e68e4e6a622  atlas_core_apk.zip" | sha256sum -c -
           unzip -q atlas_core_apk.zip
 
       - name: Set up Java 17
