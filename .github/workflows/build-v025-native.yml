@@ -1,0 +1,256 @@
+name: Build ATLAS v0.25 Native
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-v025-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Android host
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat fullhost/part0.b64 fullhost/part1.b64 fullhost/part2.b64 | tr -cd 'A-Za-z0-9+/=' > fullhost.bad.b64
+          python3 - <<'PY'
+          import base64,hashlib
+          bad=open('fullhost.bad.b64').read().strip()
+          target='2a1d6054c8487112ee202081bb9b5c0940ac403297f2304f4a710bf4bce1701f'
+          alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+          if len(bad)==28844:
+              data=base64.b64decode(bad,validate=True)
+              if hashlib.sha256(data).hexdigest()==target:
+                  open('fullhost.zip','wb').write(data); raise SystemExit(0)
+          if len(bad)!=28843: raise SystemExit('Unexpected fullhost base64 length')
+          for i in range(10000):
+              for ch in alphabet:
+                  s=bad[:i]+ch+bad[i:]
+                  try: data=base64.b64decode(s,validate=True)
+                  except Exception: continue
+                  if hashlib.sha256(data).hexdigest()==target:
+                      open('fullhost.zip','wb').write(data)
+                      raise SystemExit(0)
+          raise SystemExit('Could not repair fullhost base64')
+          PY
+          unzip -qo fullhost.zip -d ATLAS-v025
+          test -f ATLAS-v025/app/src/main/java/com/atlas/survey/MainActivity.java
+
+      - name: Apply Copernicus GLO-30 v0.25 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ATLAS-v025
+          cat > /tmp/glo30.patch <<'PATCH'
+          --- a/app/src/main/java/com/atlas/survey/MainActivity.java
+          +++ b/app/src/main/java/com/atlas/survey/MainActivity.java
+          @@ -773,17 +773,32 @@
+                       if (pts.length() < 3) throw new IllegalArgumentException("Önce çalışma alanını çizin.");
+                       double minLon = Double.POSITIVE_INFINITY, minLat = Double.POSITIVE_INFINITY;
+                       double maxLon = Double.NEGATIVE_INFINITY, maxLat = Double.NEGATIVE_INFINITY;
+          +            int validPoints = 0;
+                       for (int i = 0; i < pts.length(); i++) {
+                           JSONArray p = pts.optJSONArray(i);
+                           if (p == null || p.length() < 2) continue;
+                           double lon = p.optDouble(0, Double.NaN), lat = p.optDouble(1, Double.NaN);
+                           if (!Double.isFinite(lon) || !Double.isFinite(lat)) continue;
+          +                if (lon < -180.0 || lon > 180.0 || lat < -90.0 || lat > 90.0) {
+          +                    throw new IllegalArgumentException("Polygon koordinatı WGS84 aralığı dışında: " + lon + ", " + lat);
+          +                }
+          +                validPoints++;
+                           minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
+                           minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
+                       }
+          -            if (!Double.isFinite(minLon) || !Double.isFinite(minLat)) throw new IllegalArgumentException("Polygon koordinatları geçersiz.");
+          -            int lon0 = (int) Math.floor(minLon), lon1 = (int) Math.floor(maxLon);
+          -            int lat0 = (int) Math.floor(minLat), lat1 = (int) Math.floor(maxLat);
+          +            if (validPoints < 3 || !Double.isFinite(minLon) || !Double.isFinite(minLat)) {
+          +                throw new IllegalArgumentException("Polygon koordinatları geçersiz.");
+          +            }
+          +            if (maxLon - minLon > 5.0 || maxLat - minLat > 5.0) {
+          +                throw new IllegalArgumentException("Çalışma alanı GLO-30 mobil indirme için çok geniş. Daha küçük bir alan seçin veya yerel DEM kullanın.");
+          +            }
+          +            double maxLonInside = (maxLon > minLon) ? Math.nextAfter(maxLon, Double.NEGATIVE_INFINITY) : maxLon;
+          +            double maxLatInside = (maxLat > minLat) ? Math.nextAfter(maxLat, Double.NEGATIVE_INFINITY) : maxLat;
+          +            int lon0 = (int) Math.floor(minLon), lon1 = (int) Math.floor(maxLonInside);
+          +            int lat0 = (int) Math.floor(minLat), lat1 = (int) Math.floor(maxLatInside);
+                       int tileCount = (lon1 - lon0 + 1) * (lat1 - lat0 + 1);
+                       if (tileCount <= 0) throw new IllegalStateException("Copernicus karo hesabı yapılamadı.");
+                       if (tileCount > 4) throw new IllegalArgumentException("Alan " + tileCount + " Copernicus karosu istiyor. Telefonda en fazla 4 karo kullanılır; alanı küçültün veya yerel DEM seçin.");
+          @@ -799,18 +814,38 @@
+                               index++;
+                               String tile = copernicusTileName(lat, lon);
+                               File out = new File(cache, tile + ".tif");
+          -                    if (!out.isFile() || out.length() < 1024L * 1024L) {
+          -                        if (out.exists()) out.delete();
+          -                        sendCopernicusProgress(index - 1, tileCount, "Copernicus indiriliyor · " + tile);
+          +                    if (!isUsableCopernicusTile(out)) {
+          +                        if (out.exists() && !out.delete()) throw new IllegalStateException("Bozuk DEM önbelleği silinemedi: " + tile);
+          +                        sendCopernicusProgress(index - 1, tileCount, "GLO-30 indiriliyor · " + tile);
+                                   downloadCopernicusTile(tile, out, index - 1, tileCount);
+                               } else {
+          -                        sendCopernicusProgress(index - 1, tileCount, "DEM önbellekten · " + tile);
+          +                        sendCopernicusProgress(index - 1, tileCount, "GLO-30 önbellekten · " + tile);
+                               }
+                               files.add(out);
+          -                    sendCopernicusProgress(index, tileCount, "Copernicus hazır · " + index + "/" + tileCount);
+          +                    sendCopernicusProgress(index, tileCount, "GLO-30 hazır · " + index + "/" + tileCount);
+          +                }
+          +            }
+          +            JSONObject info;
+          +            try {
+          +                info = demSampler.loadFiles(files, "Copernicus GLO-30 · " + tileCount + " karo");
+          +            } catch (Exception firstRead) {
+          +                sendCopernicusProgress(0, tileCount, "GLO-30 cache doğrulanamadı · yeniden indiriliyor");
+          +                for (File f : files) if (f.exists()) f.delete();
+          +                files.clear();
+          +                index = 0;
+          +                for (int lat = lat0; lat <= lat1; lat++) {
+          +                    for (int lon = lon0; lon <= lon1; lon++) {
+          +                        index++;
+          +                        String tile = copernicusTileName(lat, lon);
+          +                        File out = new File(cache, tile + ".tif");
+          +                        downloadCopernicusTile(tile, out, index - 1, tileCount);
+          +                        files.add(out);
+          +                    }
+                           }
+          +                info = demSampler.loadFiles(files, "Copernicus GLO-30 · " + tileCount + " karo");
+                       }
+          -            JSONObject info = demSampler.loadFiles(files, "Copernicus GLO-30 · " + tileCount + " karo");
+                       sendDemLoaded(true, info.toString(), "Copernicus GLO-30 hazır. Tarama noktalarında Z otomatik örneklenecek.");
+                   } catch (Exception e) {
+                       sendDemLoaded(false, "{}", "Copernicus DEM hazırlanamadı: " + safeMessage(e));
+          @@ -823,23 +858,61 @@
+                   return "Copernicus_DSM_COG_10_" + ns + "_00_" + ew + "_00_DEM";
+               }
+          +
+          +    private boolean isUsableCopernicusTile(File file) {
+          +        if (file == null || !file.isFile() || file.length() < 1024L * 1024L) return false;
+          +        try (FileInputStream in = new FileInputStream(file)) {
+          +            byte[] h = new byte[4];
+          +            if (in.read(h) != 4) return false;
+          +            boolean little = h[0] == 'I' && h[1] == 'I' && (h[2] & 0xff) == 42 && h[3] == 0;
+          +            boolean big = h[0] == 'M' && h[1] == 'M' && h[2] == 0 && (h[3] & 0xff) == 42;
+          +            return little || big;
+          +        } catch (Exception ignored) {
+          +            return false;
+          +        }
+          +    }
+          
+               private void downloadCopernicusTile(String tile, File out, int completed, int total) throws Exception {
+          +        Exception last = null;
+          +        for (int attempt = 1; attempt <= 3; attempt++) {
+          +            try {
+          +                downloadCopernicusTileOnce(tile, out, completed, total, attempt);
+          +                if (!isUsableCopernicusTile(out)) throw new IllegalStateException("İndirilen dosya geçerli TIFF değil: " + tile);
+          +                return;
+          +            } catch (Exception e) {
+          +                last = e;
+          +                if (out.exists()) out.delete();
+          +                if (attempt < 3) {
+          +                    sendCopernicusProgress(completed, total, "GLO-30 tekrar deneniyor · " + attempt + "/3 · " + tile);
+          +                    try { Thread.sleep(900L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw ie; }
+          +                }
+          +            }
+          +        }
+          +        throw last == null ? new IllegalStateException("Copernicus indirilemedi: " + tile) : last;
+          +    }
+          +
+          +    private void downloadCopernicusTileOnce(String tile, File out, int completed, int total, int attempt) throws Exception {
+                   String url = "https://copernicus-dem-30m.s3.amazonaws.com/" + tile + "/" + tile + ".tif";
+                   File tmp = new File(out.getParentFile(), out.getName() + ".download");
+                   if (tmp.exists()) tmp.delete();
+                   HttpURLConnection conn = null;
+                   try {
+                       conn = (HttpURLConnection) new URL(url).openConnection();
+          -            conn.setConnectTimeout(15000);
+          -            conn.setReadTimeout(45000);
+          +            conn.setInstanceFollowRedirects(true);
+          +            conn.setConnectTimeout(20000);
+          +            conn.setReadTimeout(90000);
+          +            conn.setUseCaches(false);
+          +            conn.setRequestProperty("User-Agent", "ATLAS-Field/0.25 Android GLO30");
+          +            conn.setRequestProperty("Accept", "image/tiff,application/octet-stream,*/*");
+                       conn.setRequestMethod("GET");
+                       int code = conn.getResponseCode();
+                       if (code == 404) throw new IllegalStateException("Copernicus karosu bulunamadı: " + tile);
+          +            if (code == 403) throw new IllegalStateException("Copernicus erişimi reddedildi (HTTP 403). İnternet/VPN/DNS bağlantısını kontrol edin.");
+          +            if (code == 429) throw new IllegalStateException("Copernicus sunucusu çok fazla istek uyarısı verdi (HTTP 429).");
+                       if (code < 200 || code >= 300) throw new IllegalStateException("Copernicus HTTP " + code + ": " + tile);
+                       long expected = conn.getContentLengthLong();
+                       long bytes = 0;
+                       try (InputStream in = conn.getInputStream(); FileOutputStream fos = new FileOutputStream(tmp)) {
+          -                byte[] buf = new byte[256 * 1024];
+          +                byte[] buf = new byte[128 * 1024];
+                           int n;
+                           int lastPct = -1;
+                           while ((n = in.read(buf)) >= 0) {
+          @@ -850,11 +923,13 @@
+                                   int pct = (int) Math.min(99, (bytes * 100L) / expected);
+                                   if (pct >= lastPct + 10) {
+                                       lastPct = pct;
+          -                            sendCopernicusProgress(completed, total, "Copernicus indiriliyor · %" + pct + " · " + tile);
+          +                            sendCopernicusProgress(completed, total, "GLO-30 %" + pct + " · deneme " + attempt + "/3 · " + tile);
+                                   }
+                               }
+                           }
+          +                fos.getFD().sync();
+                       }
+          +            if (expected > 0 && tmp.length() != expected) throw new IllegalStateException("Copernicus indirmesi eksik: " + tmp.length() + "/" + expected + " bayt");
+                       if (tmp.length() < 1024L * 1024L) throw new IllegalStateException("İndirilen Copernicus karosu geçersiz veya eksik: " + tile);
+                       if (out.exists() && !out.delete()) throw new IllegalStateException("Eski DEM önbelleği silinemedi.");
+                       if (!tmp.renameTo(out)) throw new IllegalStateException("DEM karosu önbelleğe taşınamadı.");
+          PATCH
+          patch -p1 < /tmp/glo30.patch
+          sed -i "s/versionCode [0-9][0-9]*/versionCode 25/" app/build.gradle
+          sed -i "s/versionName '[^']*'/versionName '0.25-glo30-fix'/" app/build.gradle
+          grep -q 'isUsableCopernicusTile' app/src/main/java/com/atlas/survey/MainActivity.java
+          grep -q 'versionCode 25' app/build.gradle
+
+      - name: Complete Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ATLAS-v025/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '9.4.0' apply false }
+          EOF
+          cat > ATLAS-v025/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'AtlasMobile'
+          include ':app'
+          EOF
+          cat > ATLAS-v025/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - name: Android SDK
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: '9.6.0'}
+      - name: Build native APK
+        working-directory: ATLAS-v025
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify
+        run: |
+          set -euo pipefail
+          A=ATLAS-v025/app/build/outputs/apk/debug/app-debug.apk
+          unzip -t "$A" >/dev/null
+          test $(stat -c%s "$A") -gt 10000
+          cp "$A" ATLAS-v0.25-NATIVE-GLO30.apk
+          sha256sum ATLAS-v0.25-NATIVE-GLO30.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATLAS-v0.25-NATIVE-GLO30
+          path: ATLAS-v0.25-NATIVE-GLO30.apk
+          if-no-files-found: error
